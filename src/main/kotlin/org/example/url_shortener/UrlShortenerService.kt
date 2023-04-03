@@ -19,41 +19,54 @@ class UrlShortenerService(private val pgClient: PgPool) {
         return pgClient.preparedQuery("SELECT id, url, shortened_url from url_item where shortened_url = $1")
             .execute(Tuple.of(shortenedUrl))
             .onItem().transform(RowSet<Row>::iterator)
-            .onItem().transform { iterator -> if (iterator.hasNext()) UrlItem.from(iterator.next()) else null }
+            .onItem().transform { iterator ->
+                if (iterator.hasNext()) UrlItem.from(iterator.next()) else null
+            }
     }
 
-    fun createShortenedUrl(url: String): Uni<String>? {
+    fun createShortenedUrl(url: String): Uni<String?>? {
         return pgClient.preparedQuery("select shortened_url from url_item where url=$1").execute(Tuple.of(url))
             .flatMap { pgRowSet ->
-                if(pgRowSet.iterator().hasNext()) {
+                if (pgRowSet.iterator().hasNext()) {
                     Uni.createFrom().item(pgRowSet.iterator().next().getString("shortened_url"))
                 } else {
-                    val randomString = getRandomString()
-                    pgClient.preparedQuery("INSERT INTO url_item (url, shortened_url ) values ($1,$2) RETURNING shortened_url")
-                        .execute(Tuple.of(url, randomString))
-                        .onItem().transform { r -> r.iterator().next().getString("shortened_url") }
+                    getRandomString()
+                        .flatMap {
+                            pgClient.preparedQuery(
+                                "INSERT INTO url_item (url, shortened_url ) " +
+                                        "values ($1,$2) RETURNING shortened_url"
+                            )
+                                .execute(Tuple.of(url, it))
+                                .onItem().transform { r ->
+                                    r.iterator().next().getString("shortened_url")
+                                }
+                        }
                 }
             }
     }
 
-    private fun getRandomString(): String {
+    private fun getRandomString(): Uni<String> {
         var randomString = UUID.randomUUID().toString().substring(0, 8)
-        var found = false
-        while (!found) {
-            found = pgClient.preparedQuery("select id from url_item where shortened_url = $1").execute(Tuple.of(randomString))
-                .map { result -> result.iterator().hasNext() }
-                .await().indefinitely()
+//        var found = false
+//        while (!found) {
+//            found = pgClient.preparedQuery("select id from url_item where shortened_url = $1")
+//                .execute(Tuple.of(randomString))
+//                .map { result -> result.iterator().hasNext() }
+//                .map { }
+//
+//            if (!found) {
+//                randomString = UUID.randomUUID().toString().substring(0, 8)
+//            }
+//        }
 
-            if(!found) {
-                randomString = UUID.randomUUID().toString().substring(0, 8)
-            }
-        }
-
-        return randomString
+        return Uni.createFrom().item(randomString)
     }
 
-    fun config(@Observes startupEvent: StartupEvent) {
-        pgClient.query("CREATE TABLE IF NOT EXISTS URL_ITEM (id SERIAL PRIMARY KEY, url VARCHAR(264) not null, shortened_url VARCHAR(20) not null)")
+    fun createTableOnStartup(@Observes startupEvent: StartupEvent) {
+        pgClient.query(
+            "CREATE TABLE IF NOT EXISTS URL_ITEM (id SERIAL PRIMARY KEY, url VARCHAR(264) not null, " +
+                    "shortened_url VARCHAR(20) not null)"
+        )
             .execute()
             .await().indefinitely()
     }
