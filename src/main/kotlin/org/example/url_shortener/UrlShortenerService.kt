@@ -1,9 +1,9 @@
 package org.example.url_shortener
 
 import io.quarkus.runtime.StartupEvent
-import io.smallrye.common.annotation.Blocking
+import io.smallrye.mutiny.Multi
 import io.smallrye.mutiny.Uni
-import io.smallrye.mutiny.coroutines.awaitSuspending
+import io.smallrye.mutiny.tuples.Tuple2
 import io.vertx.mutiny.pgclient.PgPool
 import io.vertx.mutiny.sqlclient.Row
 import io.vertx.mutiny.sqlclient.RowSet
@@ -15,57 +15,55 @@ import javax.enterprise.event.Observes
 @ApplicationScoped
 class UrlShortenerService(private val pgClient: PgPool) {
 
-    fun getUrlItem(shortenedUrl: String): Uni<UrlItem?> {
-        return pgClient.preparedQuery("SELECT id, url, shortened_url from url_item where shortened_url = $1")
-            .execute(Tuple.of(shortenedUrl))
+    fun getUrl(alias: String): Uni<String?> {
+        return pgClient.preparedQuery("SELECT url from url_shortener where alias = $1")
+            .execute(Tuple.of(alias))
             .onItem().transform(RowSet<Row>::iterator)
             .onItem().transform { iterator ->
-                if (iterator.hasNext()) UrlItem.from(iterator.next()) else null
+                if (iterator.hasNext()) iterator.next().getString("url") else null
             }
     }
 
     fun createShortenedUrl(url: String): Uni<String?>? {
-        return pgClient.preparedQuery("select shortened_url from url_item where url=$1").execute(Tuple.of(url))
+        return pgClient.preparedQuery("select alias from url_shortener where url=$1").execute(Tuple.of(url))
             .flatMap { pgRowSet ->
                 if (pgRowSet.iterator().hasNext()) {
-                    Uni.createFrom().item(pgRowSet.iterator().next().getString("shortened_url"))
+                    Uni.createFrom().item(pgRowSet.iterator().next().getString("alias"))
                 } else {
                     getRandomString()
-                        .flatMap {
+                        .flatMap { alias ->
                             pgClient.preparedQuery(
-                                "INSERT INTO url_item (url, shortened_url ) " +
-                                        "values ($1,$2) RETURNING shortened_url"
-                            )
-                                .execute(Tuple.of(url, it))
-                                .onItem().transform { r ->
-                                    r.iterator().next().getString("shortened_url")
-                                }
+                                "INSERT INTO url_shortener (url, alias) " +
+                                        "values ($1,$2) RETURNING alias"
+                            ).execute(Tuple.of(url, alias)).onItem().transform { r ->
+                                r.iterator().next().getString("alias")
+                            }
                         }
                 }
             }
     }
 
-    private fun getRandomString(): Uni<String> {
-        var randomString = UUID.randomUUID().toString().substring(0, 8)
-//        var found = false
-//        while (!found) {
-//            found = pgClient.preparedQuery("select id from url_item where shortened_url = $1")
-//                .execute(Tuple.of(randomString))
-//                .map { result -> result.iterator().hasNext() }
-//                .map { }
-//
-//            if (!found) {
-//                randomString = UUID.randomUUID().toString().substring(0, 8)
-//            }
-//        }
+    private fun getRandomString(): Uni<String> =
+        Multi.createBy().repeating()
+            .uni(
+                { generateRandomString() },
+                { index: String? -> checkIfIndexIsUnique(index!!) }
+            )
+            .until { tuple: Tuple2<String, Boolean> -> tuple.item2 }
+            .map { tuple: Tuple2<String, Boolean> -> tuple.item1 }.select().first().toUni()
 
-        return Uni.createFrom().item(randomString)
+    private fun generateRandomString(): String = UUID.randomUUID().toString().substring(0, 8)
+
+    private fun checkIfIndexIsUnique(index: String): Uni<Tuple2<String, Boolean>>? {
+        return pgClient.preparedQuery("select id from url_shortener where alias = $1")
+            .execute(Tuple.of(index))
+            .flatMap { result -> Uni.createFrom().item(Tuple2.of(index, result.iterator().hasNext())) }
     }
 
     fun createTableOnStartup(@Observes startupEvent: StartupEvent) {
         pgClient.query(
-            "CREATE TABLE IF NOT EXISTS URL_ITEM (id SERIAL PRIMARY KEY, url VARCHAR(264) not null, " +
-                    "shortened_url VARCHAR(20) not null)"
+            "CREATE TABLE IF NOT EXISTS url_shortener (id SERIAL PRIMARY KEY, url VARCHAR(264) not null, " +
+                    "alias VARCHAR(20) not null)"
         )
             .execute()
             .await().indefinitely()
