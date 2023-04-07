@@ -8,10 +8,12 @@ import io.vertx.mutiny.pgclient.PgPool
 import io.vertx.mutiny.sqlclient.Row
 import io.vertx.mutiny.sqlclient.RowSet
 import io.vertx.mutiny.sqlclient.Tuple
+import org.eclipse.microprofile.opentracing.Traced
 import java.util.*
 import javax.enterprise.context.ApplicationScoped
 import javax.enterprise.event.Observes
 
+@Traced
 @ApplicationScoped
 class UrlShortenerService(private val pgClient: PgPool) {
 
